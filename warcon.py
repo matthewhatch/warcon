@@ -1,11 +1,13 @@
 import gpsd
+import pandas as pd
 
 from os import system
 from scapy.all import sniff, Dot11Beacon, Dot11, Dot11Elt, RadioTap
 from threading import Thread
 from time import sleep
 
-endpoints = []
+networks = pd.DataFrame(columns=['BSSID','SSID','Signal','Channel','Encryption','Lat','Lon'])
+networks.set_index("BSSID", inplace=True)
 
 def change_channel():
   channel = 1
@@ -14,10 +16,20 @@ def change_channel():
     channel = channel % 14 + 1
     sleep(1)
 
+def print_networks():
+  while True:
+    system('clear')
+    print(networks)
+    sleep(5)
+
+def save_csv():
+  while True:
+    networks.to_csv('networks.csv')
+    sleep(5)
+
 def find_ssid(packet):
   try:
     if packet.haslayer(Dot11Beacon):
-      system('clear')
       dot11_layer =  packet.getlayer(Dot11)
       bssid = dot11_layer.addr2
       ssid = packet.getlayer(Dot11Elt).info
@@ -27,8 +39,7 @@ def find_ssid(packet):
       stats = packet[Dot11Beacon].network_stats()
       channel = stats.get('channel')
       crypto = stats.get('crypto')
-
-      print(f'BSSID: {bssid}\nSSID: {ssid}\nSIGNAL: {strength}\nChannel: {channel}\nEncryption: {crypto}\nLAT: {lat}\nLON: {lon}\nTimestamp: {time}\n')
+      networks.loc[bssid] = (ssid, strength, channel, crypto, lat, lon)
   except KeyboardInterrupt:
     print("Stopping find_ssid")
 
@@ -46,12 +57,18 @@ if __name__ == "__main__":
     print('Connecting GPS...')
     gpsd.connect()
 
-    print('Starting Channel Changer...')
+    printer = Thread(target=print_networks)
+    printer.daemon = True
+    printer.start()
+
+    saver = Thread(target=save_csv)
+    saver.daemon = True
+    saver.start()
+
     channel_changer = Thread(target=change_channel)
     channel_changer.daemon = True
     channel_changer.start()
-    print('Channel Changer Started!')
-    print('Start Sniffing')
+
     sniff(iface="wlan1",prn=find_ssid)
   except KeyboardInterrupt:
     print('Stopping __main__')
