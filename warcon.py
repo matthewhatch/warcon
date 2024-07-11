@@ -1,14 +1,16 @@
 import gpsd
-import pandas as pd
+import sqlite3
 
 from datetime import datetime
 from os import system, environ, path, rename
 from scapy.all import sniff, Dot11Beacon, Dot11, Dot11Elt, RadioTap
 from threading import Thread
 from time import sleep
+from network import Network
 
-networks = pd.DataFrame(columns=['BSSID','SSID','Signal','Channel','Encryption','Lat','Lon','updated_at'])
-networks.set_index("BSSID", inplace=True)
+ADD_NETWORK = 0
+UPDATE_NETWORK = 1
+SKIP_NETWORK = 2
 
 def change_channel():
   channel = 1
@@ -17,24 +19,16 @@ def change_channel():
     channel = channel % 14 + 1
     sleep(1)
 
-def print_networks():
-  while True:
-    system('clear')
-    print(networks)
-    sleep(5)
-
-def save_csv():
-  while True:
-    networks.to_csv('networks.csv')
-    sleep(5)
-
-def should_update(bssid, strength):
+def add_or_update(bssid, strength):
+  return_val = SKIP_NETWORK
   try:
-    old = networks.loc[bssid]
-    if old.empty:
-      True
-  
-    return old['Signal'] < strength
+    existing = Network.find('bssid',bssid)
+    if len(existing) == 0:
+      return_val = ADD_NETWORK
+    elif existing[0][3] < strength:
+      return_val = UPDATE_NETWORK
+    
+    return return_val
   except KeyError:
     return True
 
@@ -51,8 +45,19 @@ def find_ssid(packet):
       crypto = stats.get('crypto')
       time, lat, lon, has_fix = get_location()
 
-      if should_update(bssid, strength):
-        networks.loc[bssid] = (ssid, strength, channel, crypto, lat, lon, time)
+
+      add_or_update_val = add_or_update(bssid, strength)
+      if add_or_update_val == ADD_NETWORK:
+        network = Network(bssid, ssid, int(strength), int(channel), str(crypto), float(lat), float(lon), time)
+        print(f'Adding Network: {network}')
+        network.save()
+        return
+
+      if add_or_update_val == UPDATE_NETWORK:
+        network = Network(bssid, ssid, int(strength), int(channel), str(crypto), float(lat), float(lon), time)
+        print(f'Updating Network {network}')
+        network.update()
+        return
   except KeyboardInterrupt:
     print("Stopping find_ssid")
 
@@ -64,18 +69,24 @@ def get_location():
   has_fix = current_location.mode >= 2
   return time, lat, lon, has_fix
 
-def rename_csv():
-  FILE_ROOT = 'networks'
-  FILE_EXT = '.csv'
-  FILE_NAME = f'{FILE_ROOT}{FILE_EXT}'
-
-  if path.isfile(FILE_NAME):
-    date_string = datetime.now().strftime("%d-%m-%Y_%H:%M:%S")
-    new_name = f'{FILE_ROOT}-{date_string}{FILE_EXT}'
-    rename(FILE_NAME, new_name)
+def setup_table():
+  connection = sqlite3.connect('warcon.db')
+  cursor = connection.cursor()
+  cursor.execute('''CREATE TABLE if NOT EXISTS networks (
+                 id INTEGER PRIMARY KEY,
+                 bssid TEXT,
+                 ssid TEXT,
+                 signal INTEGER,
+                 channel INTEGER,
+                 encryption TEXT,
+                 latitude TEXT,
+                 longitude TEXT,
+                 updated_at TEXT)
+  ''')
 
 if __name__ == "__main__":
   try:
+    setup_table()
     environ['TERM'] = 'linux'
     system('clear')
     print('[*] setting up wlan1')
@@ -86,14 +97,6 @@ if __name__ == "__main__":
 
     print('[*] Connecting GPS')
     gpsd.connect()
-    rename_csv()
-    printer = Thread(target=print_networks)
-    printer.daemon = True
-    printer.start()
-
-    saver = Thread(target=save_csv)
-    saver.daemon = True
-    saver.start()
 
     channel_changer = Thread(target=change_channel)
     channel_changer.daemon = True
